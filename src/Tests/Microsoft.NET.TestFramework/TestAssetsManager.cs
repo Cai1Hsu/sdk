@@ -145,7 +145,12 @@ namespace Microsoft.NET.TestFramework
 #if CI_BUILD
             if (!allowCopyIfPresent && Directory.Exists(directoryPath))
             {
-                throw new Exception($"Test dir {directoryPath} already exists");
+                //Arcade test retry reuses the machine so the directory might already be present in CI
+                directoryPath = Directory.Exists(directoryPath+"_1") ? directoryPath+"_2" : directoryPath+"_1";
+                if (Directory.Exists(directoryPath))
+                {
+                    throw new Exception($"Test dir {directoryPath} already exists");
+                }
             }
 #endif
 

@@ -22,10 +22,9 @@ namespace Microsoft.NET.Restore.Tests
         }
 
         [Theory]
-        [InlineData("3.5")]
         [InlineData("4.7.1")]
         [InlineData("4.7.2")]
-        [InlineData("4.5.1")]
+        [InlineData("4.5.2")]
         [InlineData("4.8")]
         public void It_restores_net_framework_project_successfully(string version)
         {
@@ -71,7 +70,7 @@ namespace Microsoft.NET.Restore.Tests
             var testProject = new TestProject()
             {
                 Name = "ProjectWithoutTargetingPackRef",
-                TargetFrameworks = "net471;net472;netcoreapp3.0",
+                TargetFrameworks = $"net471;net472;{ToolsetInfo.CurrentTargetFramework}",
             };
 
             TestAsset testAsset = null;

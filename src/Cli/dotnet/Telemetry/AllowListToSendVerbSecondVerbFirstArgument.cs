@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.CommandLine;
 using System.CommandLine.Parsing;
 using Microsoft.DotNet.Cli.Utils;
 
@@ -25,11 +26,11 @@ namespace Microsoft.DotNet.Cli.Telemetry
 
             if (topLevelCommandNameFromParse != null)
             {
-                var secondVerb = parseResult.Tokens.Where(s => s.Type == TokenType.Command).Skip(1).FirstOrDefault().Value ?? "";
+                var secondVerb = parseResult.Tokens.Where(s => s.Type == TokenType.Command).Skip(1).FirstOrDefault()?.Value ?? "";
 
                 if (TopLevelCommandNameAllowList.Contains(topLevelCommandNameFromParse))
                 {
-                    var firstArgument = parseResult.Tokens.FirstOrDefault(t => t.Type.Equals(TokenType.Argument)).Value ?? "";
+                    var firstArgument = parseResult.Tokens.FirstOrDefault(t => t.Type.Equals(TokenType.Argument))?.Value ?? "";
                     if (secondVerb != null)
                     {
                         result.Add(new ApplicationInsightsEntryFormat(

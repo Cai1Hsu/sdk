@@ -6,6 +6,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
+using System.CommandLine;
 using System.CommandLine.Parsing;
 using Microsoft.DotNet.Cli.Telemetry;
 using Microsoft.DotNet.Cli.Utils;
@@ -74,11 +75,6 @@ namespace Microsoft.DotNet.Cli
                 try
                 {
                     return ProcessArgs(args, startupTime);
-                }
-                catch (HelpException e)
-                {
-                    Reporter.Output.WriteLine(e.Message);
-                    return 0;
                 }
                 catch (Exception e) when (e.ShouldBeDisplayedAsError())
                 {

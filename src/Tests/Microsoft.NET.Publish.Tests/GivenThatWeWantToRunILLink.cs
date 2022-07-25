@@ -23,6 +23,7 @@ using Newtonsoft.Json.Linq;
 using Xunit;
 using Xunit.Abstractions;
 using static Microsoft.NET.Publish.Tests.PublishTestUtils;
+using System.Security.Permissions;
 
 namespace Microsoft.NET.Publish.Tests
 {
@@ -70,7 +71,7 @@ namespace Microsoft.NET.Publish.Tests
         [InlineData("netcoreapp3.0", true)]
         [InlineData("netcoreapp3.0", false)]
         [InlineData("net5.0", false)]
-        [InlineData("net6.0", false)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, false)]
         public void ILLink_runs_and_creates_linked_app(string targetFramework, bool referenceClassLibAsPackage)
         {
             var projectName = "HelloWorld";
@@ -186,7 +187,11 @@ namespace Microsoft.NET.Publish.Tests
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
         [InlineData("net5.0", "link")]
-        [InlineData("net6.0", "copyused")]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, "copyused")]
+        [InlineData("net6.0", "full")]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, "full")]
+        [InlineData("net6.0", "partial")]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, "partial")]
         public void ILLink_respects_global_TrimMode(string targetFramework, string trimMode)
         {
             var projectName = "HelloWorld";
@@ -210,7 +215,7 @@ namespace Microsoft.NET.Publish.Tests
             File.Exists(publishedDll).Should().BeTrue();
             File.Exists(isTrimmableDll).Should().BeTrue();
             DoesImageHaveMethod(isTrimmableDll, "UnusedMethodToRoot").Should().BeTrue();
-            if (trimMode == "link") {
+            if (trimMode is "link" or "full" or "partial") {
                 // Check that the assembly was trimmed at the member level
                 DoesImageHaveMethod(isTrimmableDll, "UnusedMethod").Should().BeFalse();
             } else {
@@ -244,7 +249,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_respects_TrimmableAssembly(string targetFramework)
         {
             var projectName = "HelloWorld";
@@ -269,7 +274,8 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [MemberData(nameof(Net6Plus), MemberType = typeof(PublishTestUtils))]
+        [InlineData("net6.0")]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_respects_IsTrimmable_attribute(string targetFramework)
         {
             string projectName = "HelloWorld";
@@ -287,7 +293,16 @@ namespace Microsoft.NET.Publish.Tests
 
             // Only unused non-trimmable assemblies are kept
             File.Exists(unusedTrimmableDll).Should().BeFalse();
-            DoesImageHaveMethod(unusedNonTrimmableDll, "UnusedMethod").Should().BeTrue();
+            if (targetFramework == "net6.0")
+            {
+                // In net6.0 the default is to keep assemblies not marked trimmable
+                DoesImageHaveMethod(unusedNonTrimmableDll, "UnusedMethod").Should().BeTrue();
+            }
+            else
+            {
+                // In net7.0+ the default is to keep assemblies not marked trimmable
+                File.Exists(unusedNonTrimmableDll).Should().BeFalse();
+            }
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
@@ -298,6 +313,7 @@ namespace Microsoft.NET.Publish.Tests
             var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
             var testProject = CreateTestProjectWithIsTrimmableAttributes(targetFramework, projectName);
             var testAsset = _testAssetsManager.CreateTestProject(testProject, identifier: targetFramework)
+                .WithProjectChanges(project => SetGlobalTrimMode(project, "partial"))
                 .WithProjectChanges(project => SetMetadata(project, "UnusedTrimmableAssembly", "IsTrimmable", "false"))
                 .WithProjectChanges(project => SetMetadata(project, "UnusedNonTrimmableAssembly", "IsTrimmable", "true"));
 
@@ -316,7 +332,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [MemberData(nameof(Net6Plus), MemberType = typeof(PublishTestUtils))]
+        [InlineData("net6.0")]
         public void ILLink_TrimMode_applies_to_IsTrimmable_assemblies(string targetFramework)
         {
             string projectName = "HelloWorld";
@@ -344,7 +360,48 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, "full")]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, "partial")]
+        public void ILLink_TrimMode_new_options(string targetFramework, string trimMode)
+        {
+            string projectName = "HelloWorld";
+            var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
+            var testProject = CreateTestProjectWithIsTrimmableAttributes(targetFramework, projectName);
+            var testAsset = _testAssetsManager.CreateTestProject(testProject, identifier: targetFramework + trimMode)
+                .WithProjectChanges(project => SetGlobalTrimMode(project, trimMode));
+
+            var publishCommand = new PublishCommand(testAsset);
+            publishCommand.Execute($"/p:RuntimeIdentifier={rid}", "-bl").Should().Pass();
+
+            var publishDirectory = publishCommand.GetOutputDirectory(targetFramework: targetFramework, runtimeIdentifier: rid).FullName;
+
+            var trimmableDll = Path.Combine(publishDirectory, "TrimmableAssembly.dll");
+            var nonTrimmableDll = Path.Combine(publishDirectory, "NonTrimmableAssembly.dll");
+            var unusedTrimmableDll = Path.Combine(publishDirectory, "UnusedTrimmableAssembly.dll");
+            var unusedNonTrimmableDll = Path.Combine(publishDirectory, "UnusedNonTrimmableAssembly.dll");
+
+            // Trimmable assemblies are trimmed at member level
+            DoesImageHaveMethod(trimmableDll, "UnusedMethod").Should().BeFalse();
+            DoesImageHaveMethod(trimmableDll, "UsedMethod").Should().BeTrue();
+            File.Exists(unusedTrimmableDll).Should().BeFalse();
+            if (trimMode is "full")
+            {
+                DoesImageHaveMethod(nonTrimmableDll, "UnusedMethod").Should().BeFalse();
+                File.Exists(unusedNonTrimmableDll).Should().BeFalse();
+            }
+            else if (trimMode is "partial")
+            {
+                DoesImageHaveMethod(nonTrimmableDll, "UnusedMethod").Should().BeTrue();
+                DoesImageHaveMethod(unusedNonTrimmableDll, "UnusedMethod").Should().BeTrue();
+            }
+            else
+            {
+                Assert.True(false, "unexpected value");
+            }
+        }
+
+        [RequiresMSBuildVersionTheory("17.0.0.32901")]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_can_set_TrimmerDefaultAction(string targetFramework)
         {
             string projectName = "HelloWorld";
@@ -474,7 +531,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_shows_single_warning_for_packagereferences_only(string targetFramework)
         {
             var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
@@ -497,7 +554,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_accepts_option_to_show_all_warnings(string targetFramework)
         {
             var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
@@ -517,7 +574,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_can_show_single_warning_per_assembly(string targetFramework)
         {
             var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
@@ -581,7 +638,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_verify_analysis_warnings_hello_world_app_trim_mode_copyused(string targetFramework)
         {
             var projectName = "AnalysisWarningsOnHelloWorldApp";
@@ -589,11 +646,13 @@ namespace Microsoft.NET.Publish.Tests
 
             // Please keep list below sorted and de-duplicated
             var expectedOutput = new string[] {
-                "ILLink : Trim analysis warning IL2026: Internal.Runtime.InteropServices.ComponentActivator.GetFunctionPointer(IntPtr,IntPtr,IntPtr,IntPtr,IntPtr,IntPtr",
-                "ILLink : Trim analysis warning IL2026: Internal.Runtime.InteropServices.InMemoryAssemblyLoader.LoadInMemoryAssembly(IntPtr,IntPtr",
-                "ILLink : Trim analysis warning IL2026: System.ComponentModel.Design.DesigntimeLicenseContextSerializer.DeserializeUsingBinaryFormatter(DesigntimeLicenseContextSerializer.StreamWrapper,String,RuntimeLicenseContext",
-                "ILLink : Trim analysis warning IL2026: System.Resources.ManifestBasedResourceGroveler.CreateResourceSet(Stream,Assembly",
+                "ILLink : Trim analysis warning IL2026: Internal.Runtime.InteropServices.ComponentActivator.GetFunctionPointer(IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, IntPtr",
+                "ILLink : Trim analysis warning IL2026: Internal.Runtime.InteropServices.InMemoryAssemblyLoader.LoadInMemoryAssembly(IntPtr, IntPtr",
+                "ILLink : Trim analysis warning IL2026: System.ComponentModel.Design.DesigntimeLicenseContextSerializer.DeserializeUsingBinaryFormatter(DesigntimeLicenseContextSerializer.StreamWrapper, String, RuntimeLicenseContext",
+                "ILLink : Trim analysis warning IL2026: System.Resources.ManifestBasedResourceGroveler.CreateResourceSet(Stream, Assembly",
                 "ILLink : Trim analysis warning IL2026: System.StartupHookProvider.ProcessStartupHooks(",
+                "ILLink : Trim analysis warning IL2063: System.RuntimeType.GetInterface(String, Boolean",
+                "ILLink : Trim analysis warning IL2065: System.Runtime.Serialization.FormatterServices.InternalGetSerializableMembers(Type",
             };
 
             var testProject = CreateTestProjectForILLinkTesting(targetFramework, projectName);
@@ -606,7 +665,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void ILLink_verify_analysis_warnings_hello_world_app_trim_mode_link(string targetFramework)
         {
             var projectName = "AnalysisWarningsOnHelloWorldApp";
@@ -798,7 +857,7 @@ namespace Microsoft.NET.Publish.Tests
 
             File.Exists(referenceDll).Should().BeTrue();
             DoesImageHaveMethod(referenceDll, "FeatureAPI").Should().BeTrue();
-            DoesImageHaveMethod(referenceDll, "get_FeatureDisabled").Should().BeTrue();
+            DoesImageHaveMethod(referenceDll, "get_FeatureDisabled").Should().BeFalse();
             // Check that this method is removed when the feature is disabled
             DoesImageHaveMethod(referenceDll, "FeatureImplementation").Should().BeFalse();
         }
@@ -866,8 +925,10 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [MemberData(nameof(SupportedTfms), MemberType = typeof(PublishTestUtils))]
-        public void ILLink_defaults_keep_nonframework(string targetFramework)
+        [InlineData("netcoreapp3.1")]
+        [InlineData("net5.0")]
+        [InlineData("net6.0")]
+        public void ILLink_old_defaults_keep_nonframework(string targetFramework)
         {
             var projectName = "HelloWorld";
             var referenceProjectName = "ClassLibForILLink";
@@ -898,6 +959,42 @@ namespace Microsoft.NET.Publish.Tests
             var depsFile = Path.Combine(publishDirectory, $"{projectName}.deps.json");
             DoesDepsFileHaveAssembly(depsFile, projectName).Should().BeTrue();
             DoesDepsFileHaveAssembly(depsFile, referenceProjectName).Should().BeTrue();
+            DoesDepsFileHaveAssembly(depsFile, unusedFrameworkAssembly).Should().BeFalse();
+        }
+
+        [RequiresMSBuildVersionFact("17.0.0.32901")]
+        public void ILLink_net7_defaults_trim_nonframework()
+        {
+            string targetFramework = "net7.0";
+            var projectName = "HelloWorld";
+            var referenceProjectName = "ClassLibForILLink";
+            var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
+
+            var testProject = CreateTestProjectForILLinkTesting(targetFramework, projectName, referenceProjectName);
+            var testAsset = _testAssetsManager.CreateTestProject(testProject, identifier: targetFramework);
+
+            var publishCommand = new PublishCommand(testAsset);
+            publishCommand.Execute("/v:n", $"/p:RuntimeIdentifier={rid}", "/p:PublishTrimmed=true").Should().Pass();
+
+            var publishDirectory = publishCommand.GetOutputDirectory(targetFramework: targetFramework, runtimeIdentifier: rid).FullName;
+            var intermediateDirectory = publishCommand.GetIntermediateDirectory(targetFramework: targetFramework, runtimeIdentifier: rid).FullName;
+            var linkedDirectory = Path.Combine(intermediateDirectory, "linked");
+
+            Directory.Exists(linkedDirectory).Should().BeTrue();
+
+            var linkedDll = Path.Combine(linkedDirectory, $"{projectName}.dll");
+            var publishedDll = Path.Combine(publishDirectory, $"{projectName}.dll");
+            var unusedDll = Path.Combine(publishDirectory, $"{referenceProjectName}.dll");
+            var unusedFrameworkDll = Path.Combine(publishDirectory, $"{unusedFrameworkAssembly}.dll");
+
+            File.Exists(linkedDll).Should().BeTrue();
+            File.Exists(publishedDll).Should().BeTrue();
+            File.Exists(unusedDll).Should().BeFalse();
+            File.Exists(unusedFrameworkDll).Should().BeFalse();
+
+            var depsFile = Path.Combine(publishDirectory, $"{projectName}.deps.json");
+            DoesDepsFileHaveAssembly(depsFile, projectName).Should().BeTrue();
+            DoesDepsFileHaveAssembly(depsFile, referenceProjectName).Should().BeFalse();
             DoesDepsFileHaveAssembly(depsFile, unusedFrameworkAssembly).Should().BeFalse();
         }
 
@@ -1103,19 +1200,21 @@ namespace Microsoft.NET.Publish.Tests
             var rid = EnvironmentInfo.GetCompatibleRid(targetFramework);
 
             var testProject = CreateTestProjectWithAnalysisWarnings(targetFramework, projectName);
-            testProject.AdditionalProperties["WarningsNotAsErrors"] = "IL2075;IL2026;IL2046";
+            testProject.AdditionalProperties["WarningsNotAsErrors"] = "IL2026;IL2046;IL2075";
             var testAsset = _testAssetsManager.CreateTestProject(testProject, identifier: targetFramework);
 
             var publishCommand = new PublishCommand(testAsset);
             publishCommand.Execute($"/p:RuntimeIdentifier={rid}", "/p:PublishTrimmed=true", "/p:SuppressTrimAnalysisWarnings=false",
-                                    "/p:TreatWarningsAsErrors=true")
+                                    "/p:TreatWarningsAsErrors=true", "/p:EnableTrimAnalyzer=false")
                 .Should().Fail()
-                // This warning is produced by both the analyzer and the linker. Don't make it an error for the test.
                 .And.HaveStdOutContaining("warning IL2026")
-                // This warning is produced by both the analyzer and the linker. Don't make it an error for the test.
                 .And.HaveStdOutContaining("warning IL2046")
+                .And.HaveStdOutContaining("warning IL2075")
                 .And.HaveStdOutContaining("error IL2043")
-                .And.HaveStdOutContaining("warning IL2075");
+                .And.NotHaveStdOutContaining("error IL2026")
+                .And.NotHaveStdOutContaining("error IL2046")
+                .And.NotHaveStdOutContaining("error IL2075")
+                .And.NotHaveStdOutContaining("warning IL2043");
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
@@ -1165,6 +1264,8 @@ namespace Microsoft.NET.Publish.Tests
 
             var publishCommand = new PublishCommand(testAsset);
             publishCommand.Execute($"/p:RuntimeIdentifier={rid}", "/p:PublishTrimmed=true", "/p:SuppressTrimAnalysisWarnings=false",
+                                    // This tests the linker only. The analyzer doesn't respect ILLinkWarningLevel.
+                                    "/p:EnableTrimAnalyzer=false",
                                     "/p:ILLinkWarningLevel=0")
                 .Should().Pass()
                 .And.NotHaveStdOutContaining("warning IL2075");
@@ -1182,15 +1283,14 @@ namespace Microsoft.NET.Publish.Tests
 
             var publishCommand = new PublishCommand(testAsset);
             publishCommand.Execute($"/p:RuntimeIdentifier={rid}", "/p:PublishTrimmed=true", "/p:SuppressTrimAnalysisWarnings=false",
-                                    "/p:TreatWarningsAsErrors=true", "/p:ILLinkTreatWarningsAsErrors=false", "/p:NoWarn=IL2026%3BIL2046")
+                                    "/p:TreatWarningsAsErrors=true", "/p:ILLinkTreatWarningsAsErrors=false", "/p:EnableTrimAnalyzer=false")
                 .Should().Pass()
-                // This warning is produced by both the analyzer and the linker. Ignore it for this test.
-                .And.NotHaveStdOutContaining("warning IL2026")
+                .And.HaveStdOutContaining("warning IL2026")
+                .And.HaveStdOutContaining("warning IL2046")
+                .And.HaveStdOutContaining("warning IL2075")
                 .And.NotHaveStdOutContaining("error IL2026")
-                // This warning is produced by both the analyzer and the linker. Ignore it for this test.
-                .And.NotHaveStdOutContaining("warning IL2046")
                 .And.NotHaveStdOutContaining("error IL2046")
-                .And.HaveStdOutContaining("warning IL2075");
+                .And.NotHaveStdOutContaining("error IL2075");
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
@@ -1327,8 +1427,8 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData("net6.0", true)]
-        [InlineData("net6.0", false)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, true)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework, false)]
         public void Build_respects_IsTrimmable_property(string targetFramework, bool isExe)
         {
             var projectName = "AnalysisWarnings";
@@ -1361,7 +1461,7 @@ namespace Microsoft.NET.Publish.Tests
         }
 
         [RequiresMSBuildVersionTheory("17.0.0.32901")]
-        [InlineData(LatestTfm)]
+        [InlineData(ToolsetInfo.CurrentTargetFramework)]
         public void Build_respects_PublishTrimmed_property(string targetFramework)
         {
             var projectName = "AnalysisWarnings";
@@ -1571,7 +1671,7 @@ namespace Microsoft.NET.Publish.Tests
                 TargetFrameworks = targetFramework,
                 IsExe = isExe
             };
-
+            
             testProject.SourceFiles[$"{projectName}.cs"] = @"
 using System;
 using System.Reflection;

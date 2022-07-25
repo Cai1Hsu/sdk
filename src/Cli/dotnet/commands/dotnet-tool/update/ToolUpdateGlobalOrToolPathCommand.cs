@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.IO;
 using System.Linq;
@@ -262,7 +263,10 @@ namespace Microsoft.DotNet.Tools.Tool.Update
             {
                 _reporter.WriteLine(
                     string.Format(
-                        LocalizableStrings.UpdateSucceededVersionNoChange,
+                        (
+                        newInstalledPackage.Version.IsPrerelease ? 
+                        LocalizableStrings.UpdateSucceededPreVersionNoChange : LocalizableStrings.UpdateSucceededStableVersionNoChange
+                        ),
                         newInstalledPackage.Id, newInstalledPackage.Version).Green());
             }
         }

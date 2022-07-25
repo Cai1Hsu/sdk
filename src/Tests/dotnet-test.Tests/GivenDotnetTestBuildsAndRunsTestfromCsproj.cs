@@ -210,7 +210,7 @@ namespace Microsoft.DotNet.Cli.Test.Tests
             var testProjectDirectory = this.CopyAndRestoreVSTestDotNetCoreTestApp("5");
             string configuration = Environment.GetEnvironmentVariable("CONFIGURATION") ?? "Debug";
             string expectedError = Path.Combine(testProjectDirectory, "bin",
-                                   configuration, "netcoreapp3.0", "VSTestCore.dll");
+                                   configuration, ToolsetInfo.CurrentTargetFramework, "VSTestCore.dll");
             expectedError = "The test source file " + "\"" + expectedError + "\"" + " provided was not found.";
 
             // Call test
@@ -748,6 +748,57 @@ namespace Microsoft.DotNet.Cli.Test.Tests
                 result.StdOut.Should().Contain("Passed:     1");
                 result.StdOut.Should().Contain("Failed:     1");
             }
+        }
+
+        [Theory]
+        // Even count of slash/backslash
+        [InlineData("--output", "\\\\")]
+        [InlineData("--output", "\\\\\\\\")]
+        [InlineData("--output", "//")]
+        [InlineData("--output", "////")]
+        [InlineData("--diag", "\\\\")]
+        [InlineData("--diag", "\\\\\\\\")]
+        [InlineData("--diag", "//")]
+        [InlineData("--diag", "////")]
+        [InlineData("--results-directory", "\\\\")]
+        [InlineData("--results-directory", "\\\\\\\\")]
+        [InlineData("--results-directory", "//")]
+        [InlineData("--results-directory", "////")]
+        // Odd count of slash/backslash
+        [InlineData("--output", "\\")]
+        [InlineData("--output", "\\\\\\")]
+        [InlineData("--output", "/")]
+        [InlineData("--output", "///")]
+        [InlineData("--diag", "\\")]
+        [InlineData("--diag", "\\\\\\")]
+        [InlineData("--diag", "/")]
+        [InlineData("--diag", "///")]
+        [InlineData("--results-directory", "\\")]
+        [InlineData("--results-directory", "\\\\\\")]
+        [InlineData("--results-directory", "/")]
+        [InlineData("--results-directory", "///")]
+        public void PathEndsWithSlashOrBackslash(string flag, string slashesOrBackslashes)
+        {
+            // NOTE: We also want to test with forward slashes because on Windows they
+            // are converted to backslashes and so need to be handled correctly.
+            string testProjectDirectory = CopyAndRestoreVSTestDotNetCoreTestApp(Guid.NewGuid().ToString());
+            string flagDirectory = Path.Combine(testProjectDirectory, "flag-dir");
+
+            // Call test
+            CommandResult result = new DotnetTestCommand(Log)
+                .WithWorkingDirectory(testProjectDirectory)
+                .Execute(flag, flagDirectory + slashesOrBackslashes);
+
+            // Verify
+            if (!TestContext.IsLocalized())
+            {
+                result.StdOut.Should().Contain("Total:     2");
+                result.StdOut.Should().Contain("Passed:     1");
+                result.StdOut.Should().Contain("Failed:     1");
+            }
+
+            Directory.Exists(flagDirectory).Should().BeTrue("folder '{0}' should exist.", flagDirectory);
+            Directory.EnumerateFileSystemEntries(flagDirectory).Should().NotBeEmpty();
         }
 
         private string CopyAndRestoreVSTestDotNetCoreTestApp([CallerMemberName] string callingMethod = "")
